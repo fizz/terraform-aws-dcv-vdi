@@ -31,12 +31,18 @@ variable "vdi_users" {
 }
 
 variable "allowed_ingress_cidrs" {
-  description = "CIDRs allowed to reach DCV (443 tcp + dcv_port tcp/udp). Scope this to the users' IPs — never 0.0.0.0/0."
+  description = <<-EOT
+    CIDRs allowed to reach DCV (443 tcp + dcv_port tcp/udp). Scope this to the
+    users' client IPs. 0.0.0.0/0 is strongly discouraged but not blocked: DCV
+    enforces its own OS-credential auth, so open ingress can be a defensible,
+    informed choice — but it exposes the login surface to the whole internet.
+    Prefer /32s.
+  EOT
   type        = list(string)
 
   validation {
-    condition     = !contains(var.allowed_ingress_cidrs, "0.0.0.0/0")
-    error_message = "Refusing 0.0.0.0/0 on a remote-desktop ingress. Scope allowed_ingress_cidrs to real client IPs."
+    condition     = length(var.allowed_ingress_cidrs) > 0
+    error_message = "allowed_ingress_cidrs must list at least one CIDR — an empty list leaves the VDI unreachable."
   }
 }
 

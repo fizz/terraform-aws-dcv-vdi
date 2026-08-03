@@ -83,7 +83,7 @@ See [`variables.tf`](./variables.tf) and [`outputs.tf`](./outputs.tf). Highlight
 | Input | Notes |
 |---|---|
 | `vdi_users` | map of desktops; each gets its own EIP, admin password, optional hostname |
-| `allowed_ingress_cidrs` | client IPs; a validation refuses `0.0.0.0/0` |
+| `allowed_ingress_cidrs` | client IPs; `0.0.0.0/0` is strongly discouraged (DCV has its own OS-cred auth) but not blocked — empty list is |
 | `dcv_port` | default `8443`; a `443` portproxy fronts it |
 | `route53_zone_id` / `letsencrypt_email` | required only if a user has a `hostname` |
 | `kms_key_id` | optional CMK for EBS + SSM; `null` uses AWS-managed keys |

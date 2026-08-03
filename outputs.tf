@@ -23,6 +23,11 @@ output "iam_role_arn" {
   value       = aws_iam_role.vdi.arn
 }
 
+output "iam_role_name" {
+  description = "The shared instance role name — attach extra inline policies or managed-policy attachments to it from the caller."
+  value       = aws_iam_role.vdi.name
+}
+
 output "security_group_id" {
   description = "The VDI security group id."
   value       = aws_security_group.vdi.id
