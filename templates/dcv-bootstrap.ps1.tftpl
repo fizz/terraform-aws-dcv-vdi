@@ -1,0 +1,102 @@
+<powershell>
+# terraform-aws-dcv-vdi bootstrap. Runs ONCE at first boot as SYSTEM.
+#
+# LOOP-SAFETY: this script ends in Restart-Computer. A boot-time script that reboots
+# MUST be idempotent, or (with <persist>true>) it re-runs and reboots on every boot,
+# forever. Here it is guarded by a marker file AND <persist>false>, so it runs once
+# and reboots once.
+
+$ErrorActionPreference = "Stop"
+
+# --- run-once guard --------------------------------------------------------------
+if (Test-Path 'C:\dcv-bootstrap.done') { exit 0 }
+Start-Transcript -Path 'C:\dcv-bootstrap.log' -Append
+
+# --- AWS CLI (install if the AMI lacks it) ---------------------------------------
+if (-not (Get-Command aws -ErrorAction SilentlyContinue)) {
+  Invoke-WebRequest -Uri 'https://awscli.amazonaws.com/AWSCLIV2.msi' -OutFile "$env:TEMP\AWSCLIV2.msi"
+  Start-Process msiexec.exe -ArgumentList '/i', "$env:TEMP\AWSCLIV2.msi", '/quiet', '/norestart' -Wait
+  $env:Path += ';C:\Program Files\Amazon\AWSCLIV2'
+}
+
+# --- Local admin, password from the seeded SSM SecureString ----------------------
+$adminUser = '${admin_username}'
+$plainPw = & aws ssm get-parameter --name '${ssm_password_param}' --with-decryption --region '${region}' --query 'Parameter.Value' --output text
+$securePw = ConvertTo-SecureString $plainPw -AsPlainText -Force
+if (Get-LocalUser -Name $adminUser -ErrorAction SilentlyContinue) {
+  Set-LocalUser -Name $adminUser -Password $securePw
+} else {
+  New-LocalUser -Name $adminUser -Password $securePw -FullName $adminUser -PasswordNeverExpires
+}
+Add-LocalGroupMember -Group 'Administrators'       -Member $adminUser -ErrorAction SilentlyContinue
+Add-LocalGroupMember -Group 'Remote Desktop Users' -Member $adminUser -ErrorAction SilentlyContinue
+$plainPw = $null
+
+# --- Data volume -> D: -----------------------------------------------------------
+$raw = Get-Disk | Where-Object PartitionStyle -eq 'RAW' | Select-Object -First 1
+if ($raw) {
+  $raw | Initialize-Disk -PartitionStyle GPT -PassThru |
+    New-Partition -DriveLetter D -UseMaximumSize |
+    Format-Volume -FileSystem NTFS -NewFileSystemLabel 'Data' -Confirm:$false
+}
+
+# --- WSL2 backend for Docker Desktop (needs nested virtualization on the instance) -
+Enable-WindowsOptionalFeature -Online -FeatureName VirtualMachinePlatform -All -NoRestart
+Enable-WindowsOptionalFeature -Online -FeatureName Microsoft-Windows-Subsystem-Linux -All -NoRestart
+
+# --- NICE DCV server -------------------------------------------------------------
+Invoke-WebRequest -Uri 'https://d1uj6qtbmh3dt5.cloudfront.net/nice-dcv-server-x64-Release.msi' -OutFile "$env:TEMP\dcv-server.msi"
+Start-Process msiexec.exe -ArgumentList '/i', "$env:TEMP\dcv-server.msi", 'ADDLOCAL=ALL', 'REMOVE=iddDriver', '/quiet', '/norestart', '/l*v', 'C:\dcv-install.log' -Wait
+
+# DCV config: an automatic console session owned by the local admin, web + QUIC on dcv_port.
+$dcv = 'HKEY_USERS\S-1-5-18\Software\GSettings\com\nicesoftware\dcv'
+reg add "$dcv\session-management" /v create-session /t REG_DWORD /d 1 /f
+reg add "$dcv\session-management\automatic-console-session" /v owner /t REG_SZ /d "$adminUser" /f
+reg add "$dcv\session-management\automatic-console-session" /v storage-root /t REG_SZ /d "C:/Users/$adminUser/" /f
+reg add "$dcv\connectivity" /v enable-quic-frontend /t REG_DWORD /d 1 /f
+reg add "$dcv\connectivity" /v web-port  /t REG_DWORD /d ${dcv_port} /f
+reg add "$dcv\connectivity" /v quic-port /t REG_DWORD /d ${dcv_port} /f
+Set-Service -Name dcvserver -StartupType Automatic
+
+# --- 443 -> dcv_port portproxy (DCV refuses privileged ports; this gives a clean URL) -
+netsh interface portproxy add v4tov4 listenport=443 listenaddress=0.0.0.0 connectport=${dcv_port} connectaddress=127.0.0.1
+%{ if hostname != "" ~}
+
+# --- Auto-renewing Let's Encrypt cert: win-acme + Route53 DNS-01 + self-assumed role -
+# The instance role trusts itself, so win-acme's route53 plugin (--route53iamrole, which
+# takes the role NAME, not an ARN) calls AssumeRole on the role this box already runs
+# under to get fresh short-lived STS creds per challenge. No IAM user, no static keys.
+# --setuptaskscheduler installs the renewal task (which re-runs issuance + the deploy script).
+New-Item -ItemType Directory -Force -Path 'C:\dcv-cert' | Out-Null
+
+# NOTE: pin this to a specific win-acme release asset for your environment.
+$wacsZip = "$env:TEMP\win-acme.zip"
+Invoke-WebRequest -Uri 'https://github.com/win-acme/win-acme/releases/latest/download/win-acme.x64.pluggable.zip' -OutFile $wacsZip
+Expand-Archive -Path $wacsZip -DestinationPath 'C:\win-acme' -Force
+$wacs = (Get-ChildItem 'C:\win-acme' -Recurse -Filter 'wacs.exe' | Select-Object -First 1).FullName
+
+# Deploy script: point DCV at the freshly-issued PEM and restart it. Re-runs on every renewal.
+$deploy = 'C:\dcv-cert\deploy-to-dcv.ps1'
+Set-Content -Path $deploy -Encoding ASCII -Value @'
+param([string]$CertFile, [string]$KeyFile)
+$k = 'HKEY_USERS\S-1-5-18\Software\GSettings\com\nicesoftware\dcv\connectivity'
+reg add $k /v certificate-file     /t REG_SZ /d $CertFile /f
+reg add $k /v certificate-key-file /t REG_SZ /d $KeyFile  /f
+Restart-Service -Name dcvserver -Force
+'@
+
+& $wacs `
+  --target manual --host '${hostname}' `
+  --validation route53 --route53iamrole '${acme_role_name}' `
+  --emailaddress '${letsencrypt_email}' --accepttos `
+  --store pemfiles --pemfilespath 'C:\dcv-cert' `
+  --installation script --script $deploy --scriptparameters '{CertificatePath} {KeyPath}' `
+  --setuptaskscheduler
+%{ endif ~}
+
+# --- done: mark BEFORE rebooting so no later boot re-runs this, then reboot once ---
+New-Item -ItemType File -Force -Path 'C:\dcv-bootstrap.done' | Out-Null
+Stop-Transcript
+Restart-Computer -Force
+</powershell>
+<persist>false</persist>
