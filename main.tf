@@ -235,10 +235,12 @@ resource "aws_instance" "vdi" {
     ssm_password_param = aws_ssm_parameter.admin_password[each.key].name
     admin_username     = each.value.username
     dcv_port           = var.dcv_port
-    hostname           = coalesce(each.value.hostname, "")
-    route53_zone_id    = coalesce(var.route53_zone_id, "")
-    letsencrypt_email  = coalesce(var.letsencrypt_email, "")
-    acme_role_name     = var.name
+    # "value or empty string" — NOT coalesce(): coalesce rejects an all-empty
+    # argument list, so coalesce(null, "") crashes. This is the common no-TLS path.
+    hostname          = each.value.hostname == null ? "" : each.value.hostname
+    route53_zone_id   = var.route53_zone_id == null ? "" : var.route53_zone_id
+    letsencrypt_email = var.letsencrypt_email == null ? "" : var.letsencrypt_email
+    acme_role_name    = var.name
   })
 
   tags = merge(var.tags, { Name = "${var.name}-${each.key}", User = each.value.username })
