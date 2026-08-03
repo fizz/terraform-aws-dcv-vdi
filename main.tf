@@ -148,8 +148,13 @@ resource "aws_iam_instance_profile" "vdi" {
 # -----------------------------------------------------------------------------
 # Security group — DCV web+QUIC and the 443 portproxy, allowlisted CIDRs only.
 # -----------------------------------------------------------------------------
+# name_prefix + create_before_destroy so this SG is actually REPLACEABLE. A
+# fixed-name SG attached to a running instance can't be replaced: destroy-first
+# deadlocks on the instance's dependency, and create-first collides on the name.
+# name_prefix lets AWS mint a unique name so the new SG is created, the instance
+# is rewired onto it, and only then is the old one deleted.
 resource "aws_security_group" "vdi" {
-  name        = var.name
+  name_prefix = "${var.name}-"
   description = "NICE DCV VDI: DCV web+QUIC and 443 portproxy from allowlisted CIDRs only"
   vpc_id      = var.vpc_id
 
@@ -187,6 +192,10 @@ resource "aws_security_group" "vdi" {
   }
 
   tags = merge(var.tags, { Name = var.name })
+
+  lifecycle {
+    create_before_destroy = true
+  }
 }
 
 # -----------------------------------------------------------------------------
