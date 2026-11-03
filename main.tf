@@ -158,29 +158,41 @@ resource "aws_security_group" "vdi" {
   description = "NICE DCV VDI: DCV web+QUIC and 443 portproxy from allowlisted CIDRs and security groups only"
   vpc_id      = var.vpc_id
 
-  ingress {
-    description = "DCV web (HTTPS)"
-    from_port   = var.dcv_port
-    to_port     = var.dcv_port
-    protocol    = "tcp"
-    cidr_blocks = var.allowed_ingress_cidrs
+  # An ingress rule must name at least one source. These are dynamic so that an empty
+  # allowed_ingress_cidrs produces no rule at all, rather than three rules with no
+  # source, which AWS rejects.
+  dynamic "ingress" {
+    for_each = length(var.allowed_ingress_cidrs) > 0 ? [1] : []
+    content {
+      description = "DCV web (HTTPS)"
+      from_port   = var.dcv_port
+      to_port     = var.dcv_port
+      protocol    = "tcp"
+      cidr_blocks = var.allowed_ingress_cidrs
+    }
   }
 
-  ingress {
-    description = "DCV QUIC (UDP)"
-    from_port   = var.dcv_port
-    to_port     = var.dcv_port
-    protocol    = "udp"
-    cidr_blocks = var.allowed_ingress_cidrs
+  dynamic "ingress" {
+    for_each = length(var.allowed_ingress_cidrs) > 0 ? [1] : []
+    content {
+      description = "DCV QUIC (UDP)"
+      from_port   = var.dcv_port
+      to_port     = var.dcv_port
+      protocol    = "udp"
+      cidr_blocks = var.allowed_ingress_cidrs
+    }
   }
 
   # DCV can't bind privileged ports, so a portproxy fronts 443 -> dcv_port (clean URL).
-  ingress {
-    description = "DCV via 443 portproxy"
-    from_port   = 443
-    to_port     = 443
-    protocol    = "tcp"
-    cidr_blocks = var.allowed_ingress_cidrs
+  dynamic "ingress" {
+    for_each = length(var.allowed_ingress_cidrs) > 0 ? [1] : []
+    content {
+      description = "DCV via 443 portproxy"
+      from_port   = 443
+      to_port     = 443
+      protocol    = "tcp"
+      cidr_blocks = var.allowed_ingress_cidrs
+    }
   }
 
   # The same three rules again, sourced from security groups instead of addresses.
