@@ -8,9 +8,27 @@ output "public_ips" {
   value       = { for k, e in aws_eip.vdi : k => e.public_ip }
 }
 
+output "private_ips" {
+  description = "Map of vdi user id -> the instance's private address. This is the address to connect to over a tailnet or VPN when assign_public_ip is false."
+  value       = { for k, i in aws_instance.vdi : k => i.private_ip }
+}
+
 output "dcv_urls" {
-  description = "Map of vdi user id -> the URL to connect the DCV client to (hostname if set, else the EIP)."
-  value       = { for k, u in var.vdi_users : k => "https://${coalesce(u.hostname, aws_eip.vdi[k].public_ip)}" }
+  description = <<-EOT
+    Map of vdi user id -> the URL to connect the DCV client to. The hostname when one
+    is set, else the Elastic IP, else the private address for a desktop reached over a
+    tailnet or VPN.
+
+    A hostname with assign_public_ip = false issues a certificate but writes no public
+    A record, so whatever resolves that name has to be managed outside this module.
+  EOT
+  value = {
+    for k, u in var.vdi_users : k => "https://${coalesce(
+      u.hostname,
+      try(aws_eip.vdi[k].public_ip, null),
+      aws_instance.vdi[k].private_ip,
+    )}"
+  }
 }
 
 output "admin_password_ssm_parameters" {

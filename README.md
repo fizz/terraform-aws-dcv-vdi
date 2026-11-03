@@ -76,6 +76,65 @@ Then connect the [DCV client](https://www.amazonaws.cn/en/hpc/dcv/) to the outpu
 sign in with the local admin whose seeded password is in SSM
 (`terraform output admin_password_ssm_parameters`).
 
+## Private mode: a desktop with no address on the internet
+
+The default above is a desktop you reach at an https hostname from anywhere. Set
+`assign_public_ip = false` and it gets no Elastic IP and no public DNS record at all —
+for a desktop you reach over a tailnet, a VPN or a peered VPC instead.
+
+Two ways to gate it, and they are different models.
+
+**A security group in front.** The thing that fronts the desktop has its own group — a
+tailnet subnet router, a bastion, an internal load balancer — and that group is the only
+ingress. The rule follows the group, so it survives the instance behind it being
+replaced, which an address-based rule does not.
+
+```hcl
+module "vdi" {
+  source = "github.com/fizz/terraform-aws-dcv-vdi?ref=v0.2.0"
+
+  name      = "eval"
+  vpc_id    = "vpc-0123456789abcdef0"
+  subnet_id = "subnet-0123456789abcdef0" # private, with a NAT route
+
+  assign_public_ip                   = false
+  allowed_ingress_cidrs              = []
+  allowed_ingress_security_group_ids = ["sg-0123456789abcdef0"]
+
+  enable_nested_virtualization = true
+
+  vdi_users = {
+    eval = {
+      username = "evaluator"
+      hostname = null # no record, no certificate
+    }
+  }
+}
+```
+
+**The desktop on the overlay itself.** Join it to the tailnet as a node and DCV traffic
+arrives through a tunnel that terminates on the host, never crossing the security group.
+Leave **both** ingress lists empty: zero ingress is correct here, and access control
+moves into the overlay's ACLs, where the rule follows the person rather than an address.
+
+Install and authenticate the tunnel client from your own provisioning — this module does
+not do it for you.
+
+### Two things to know
+
+`hostname` is still what asks for TLS. Setting it with `assign_public_ip = false` issues
+a certificate through DNS-01 — which needs no inbound and so still works — but writes no
+public A record, so nothing resolves the name unless you manage that elsewhere. For a
+private desktop, leave `hostname = null` and accept DCV's own certificate.
+
+The desktop still needs **egress**: DCV licensing, package pulls, the SSM agent and ACME
+all reach out. A private subnet with a NAT route, not an isolated one.
+
+### Outputs in private mode
+
+`public_ips` is an empty map. Use `private_ips`, and `dcv_urls` falls back from hostname
+to Elastic IP to the private address, so it is correct in all three modes.
+
 ## Inputs / outputs
 
 See [`variables.tf`](./variables.tf) and [`outputs.tf`](./outputs.tf). Highlights:

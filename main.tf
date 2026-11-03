@@ -155,7 +155,7 @@ resource "aws_iam_instance_profile" "vdi" {
 # is rewired onto it, and only then is the old one deleted.
 resource "aws_security_group" "vdi" {
   name_prefix = "${var.name}-"
-  description = "NICE DCV VDI: DCV web+QUIC and 443 portproxy from allowlisted CIDRs only"
+  description = "NICE DCV VDI: DCV web+QUIC and 443 portproxy from allowlisted CIDRs and security groups only"
   vpc_id      = var.vpc_id
 
   ingress {
@@ -181,6 +181,42 @@ resource "aws_security_group" "vdi" {
     to_port     = 443
     protocol    = "tcp"
     cidr_blocks = var.allowed_ingress_cidrs
+  }
+
+  # The same three rules again, sourced from security groups instead of addresses.
+  # A group-sourced rule keeps working when the instance in front is replaced, which
+  # an address-sourced one does not. For a private desktop these are the only way in.
+  dynamic "ingress" {
+    for_each = length(var.allowed_ingress_security_group_ids) > 0 ? [1] : []
+    content {
+      description     = "DCV web (HTTPS) from allowed security groups"
+      from_port       = var.dcv_port
+      to_port         = var.dcv_port
+      protocol        = "tcp"
+      security_groups = var.allowed_ingress_security_group_ids
+    }
+  }
+
+  dynamic "ingress" {
+    for_each = length(var.allowed_ingress_security_group_ids) > 0 ? [1] : []
+    content {
+      description     = "DCV QUIC (UDP) from allowed security groups"
+      from_port       = var.dcv_port
+      to_port         = var.dcv_port
+      protocol        = "udp"
+      security_groups = var.allowed_ingress_security_group_ids
+    }
+  }
+
+  dynamic "ingress" {
+    for_each = length(var.allowed_ingress_security_group_ids) > 0 ? [1] : []
+    content {
+      description     = "DCV via 443 portproxy from allowed security groups"
+      from_port       = 443
+      to_port         = 443
+      protocol        = "tcp"
+      security_groups = var.allowed_ingress_security_group_ids
+    }
   }
 
   egress {
@@ -261,7 +297,7 @@ resource "aws_instance" "vdi" {
 }
 
 resource "aws_eip" "vdi" {
-  for_each = var.vdi_users
+  for_each = var.assign_public_ip ? var.vdi_users : {}
 
   instance = aws_instance.vdi[each.key].id
   domain   = "vpc"
@@ -271,7 +307,7 @@ resource "aws_eip" "vdi" {
 
 # Public DNS name -> EIP (the URL users type; win-acme certs this hostname).
 resource "aws_route53_record" "vdi" {
-  for_each = { for k, u in var.vdi_users : k => u if u.hostname != null }
+  for_each = var.assign_public_ip ? { for k, u in var.vdi_users : k => u if u.hostname != null } : {}
 
   zone_id = var.route53_zone_id
   name    = each.value.hostname

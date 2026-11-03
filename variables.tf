@@ -30,6 +30,40 @@ variable "vdi_users" {
   }))
 }
 
+variable "assign_public_ip" {
+  description = <<-EOT
+    Give each desktop an Elastic IP and a public Route53 A record. True keeps the
+    original behaviour: a desktop reachable at a clean https hostname from the
+    internet, with an on-box Let's Encrypt certificate.
+
+    Set it to false for a desktop that is reached over a private network instead --
+    a tailnet, a VPN or a peered VPC. No Elastic IP is created and no public A
+    record is written, so the desktop has no address on the internet at all.
+    Pair it with allowed_ingress_security_group_ids so the gate is a security
+    group rather than a CIDR.
+
+    A private desktop still needs egress for DCV licensing, package pulls and the
+    SSM agent, so place it in a subnet with a NAT route.
+  EOT
+  type        = bool
+  default     = true
+}
+
+variable "allowed_ingress_security_group_ids" {
+  description = <<-EOT
+    Security groups allowed to reach DCV, in addition to allowed_ingress_cidrs.
+    Use this instead of a CIDR when the thing in front of the desktop has its own
+    group -- a tailnet subnet router, a bastion, a load balancer. The rule follows
+    the group rather than an address, so it survives the instance behind it being
+    replaced.
+
+    With assign_public_ip = false and allowed_ingress_cidrs = [], these groups are
+    the only way in.
+  EOT
+  type        = list(string)
+  default     = []
+}
+
 variable "allowed_ingress_cidrs" {
   description = <<-EOT
     CIDRs allowed to reach DCV (443 tcp + dcv_port tcp/udp). Scope this to the
@@ -37,14 +71,24 @@ variable "allowed_ingress_cidrs" {
     enforces its own OS-credential auth, so open ingress can be a defensible,
     informed choice — but it exposes the login surface to the whole internet.
     Prefer /32s.
+
+    An empty list is allowed only when allowed_ingress_security_group_ids names at
+    least one group, which is the private-tailnet case. The two together must leave
+    some way in.
   EOT
   type        = list(string)
+  default     = []
 
-  validation {
-    condition     = length(var.allowed_ingress_cidrs) > 0
-    error_message = "allowed_ingress_cidrs must list at least one CIDR — an empty list leaves the VDI unreachable."
-  }
 }
+
+# Both lists empty is legitimate and is the third mode: the desktop is itself a node on
+# an overlay network -- a tailnet, a WireGuard mesh -- so DCV traffic arrives through a
+# tunnel that terminates on the host and never crosses the security group at all. Access
+# control then lives in the overlay's own ACLs, which is a better place for it: the rule
+# follows the person rather than an address or a group.
+#
+# There is deliberately no validation forcing one of the two to be non-empty. It was
+# there, and it rejected exactly this case.
 
 variable "dcv_port" {
   description = "Port NICE DCV serves web + QUIC on. A 443 portproxy fronts it so the URL needs no :port (DCV can't bind privileged ports)."
