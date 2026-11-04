@@ -91,7 +91,7 @@ replaced, which an address-based rule does not.
 
 ```hcl
 module "vdi" {
-  source = "github.com/fizz/terraform-aws-dcv-vdi?ref=v0.2.1"
+  source = "github.com/fizz/terraform-aws-dcv-vdi?ref=v0.2.2"
 
   name      = "eval"
   vpc_id    = "vpc-0123456789abcdef0"
