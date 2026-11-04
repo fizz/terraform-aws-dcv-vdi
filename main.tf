@@ -68,13 +68,32 @@ data "aws_iam_policy_document" "assume" {
     }
   }
 
-  # Self-assume. The ARN is constructed (not a resource reference) to avoid a
-  # create-time cycle; the role name below is fixed to var.name.
-  statement {
-    actions = ["sts:AssumeRole"]
-    principals {
-      type        = "AWS"
-      identifiers = ["arn:${local.partition}:iam::${local.account_id}:role/${var.name}"]
+  # Self-assume, so the on-box ACME client can mint short-lived STS credentials for
+  # the DNS-01 challenge. Only a desktop with a hostname runs ACME, so only that
+  # desktop needs it.
+  #
+  # The principal is the account root with a condition pinning it to this role's ARN,
+  # not the role ARN itself. Naming the role directly cannot create: IAM validates
+  # principals at CreateRole, the role does not exist yet, and it refuses with
+  # MalformedPolicyDocument. Adding the same statement to a role that already exists
+  # succeeds, which is why a module adopted onto existing infrastructure never shows
+  # this and a fresh install always does.
+  #
+  # The root principal exists from the start, and the condition narrows the grant back
+  # to exactly this one role, so nothing else in the account inherits it.
+  dynamic "statement" {
+    for_each = local.wants_tls ? [1] : []
+    content {
+      actions = ["sts:AssumeRole"]
+      principals {
+        type        = "AWS"
+        identifiers = ["arn:${local.partition}:iam::${local.account_id}:root"]
+      }
+      condition {
+        test     = "ArnEquals"
+        variable = "aws:PrincipalArn"
+        values   = ["arn:${local.partition}:iam::${local.account_id}:role/${var.name}"]
+      }
     }
   }
 }

@@ -136,4 +136,26 @@ variable "tags" {
   description = "Extra tags merged onto every resource."
   type        = map(string)
   default     = {}
+
+  # AWS publishes one character set for tags and then enforces it unevenly. EC2 and S3
+  # take a comma; IAM and SSM reject it. A module that tags all four therefore fails
+  # halfway through an apply, having already created the resources whose services are
+  # lenient, and the error names a service rather than the character.
+  #
+  # Checking it here moves that discovery from the middle of an apply to `terraform
+  # validate`, which costs nothing and runs before anything exists. No linter does this:
+  # tflint's only tag rule checks that keys are present, not that values are legal.
+  validation {
+    condition = alltrue([
+      for v in values(var.tags) : can(regex("^[\\p{L}\\p{Z}\\p{N}_.:/=+\\-@]*$", v))
+    ])
+    error_message = "A tag value may hold only letters, separators, digits and _ . : / = + - @ — a comma is the usual offender. Rejected: ${join(", ", [for k, v in var.tags : "${k}=${v}" if !can(regex("^[\\p{L}\\p{Z}\\p{N}_.:/=+\\-@]*$", v))])}"
+  }
+
+  validation {
+    condition = alltrue([
+      for k in keys(var.tags) : can(regex("^[\\p{L}\\p{Z}\\p{N}_.:/=+\\-@]*$", k)) && !startswith(lower(k), "aws:")
+    ])
+    error_message = "A tag key may hold only letters, separators, digits and _ . : / = + - @, and may not begin with the reserved aws: prefix."
+  }
 }
