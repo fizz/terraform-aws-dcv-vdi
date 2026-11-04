@@ -148,6 +148,45 @@ no hosts-file edit on every client.
 The desktop still needs **egress**: DCV licensing, package pulls, the SSM agent and ACME
 all reach out. A private subnet with a NAT route, not an isolated one.
 
+### When the zone is in another account
+
+By default win-acme proves the name with the desktop's own instance role: the role holds
+the Route53 grant, assumes itself for short-lived credentials, and writes the challenge.
+That works whenever the zone and the desktop share an account.
+
+It stops working the moment they do not, and the failure is easy to misread as a privacy
+constraint rather than an account one. `--route53iamrole` takes a role **name** and builds
+the ARN from the account win-acme is running in, so it cannot name a role anywhere else;
+and Route53 has no resource policy, so the zone cannot be shared back the other way.
+
+Set `acme_role_arn` to a role in the account that owns the zone:
+
+```hcl
+route53_zone_id = "Z0123456789ABCDEFGHIJ"
+acme_role_arn   = "arn:aws:iam::222222222222:role/dns-acme"
+```
+
+This **switches** the mechanism rather than adding to it. The module writes an AWS SDK
+profile on the desktop whose `credential_source` is the instance metadata and whose
+`role_arn` is that role, points win-acme at it through `AWS_PROFILE`, and drops
+`--route53iamrole`. The SDK makes the hop, so there is still no IAM user and no static
+key — the instance role's only added permission is `sts:AssumeRole` on that one ARN, and
+the Route53 grant stays in the account that owns the zone.
+
+Give that role the narrowest grant that works: `ChangeResourceRecordSets` on the zone,
+conditioned to `TXT` at `_acme-challenge.*` names, plus `GetChange` and the list calls.
+It has to trust the desktop's instance role.
+
+Do not reuse a role your CI already assumes for applying terraform. Renewal fires from a
+scheduled task on the desktop around day sixty, when no workflow is running — that is the
+whole reason it needs a role of its own, and folding the challenge grant into an apply
+role hands every apply the ability to publish challenge records.
+
+The tempting alternative is delegating the subdomain into the desktop's account so that
+everything is local again. Look at what already lives under that name first: a delegation
+shadows **every** existing record there, so an app record or an ACM validation record in
+the parent zone stops resolving until it is recreated in the new zone.
+
 ### Outputs in private mode
 
 `public_ips` is an empty map. Use `private_ips`, and `dcv_urls` falls back from hostname
@@ -213,6 +252,7 @@ See [`variables.tf`](./variables.tf) and [`outputs.tf`](./outputs.tf). Highlight
 | `allowed_ingress_cidrs` | client IPs; `0.0.0.0/0` is strongly discouraged (DCV has its own OS-cred auth) but not blocked — empty list is |
 | `dcv_port` | default `8443`; a `443` portproxy fronts it |
 | `route53_zone_id` / `letsencrypt_email` | required only if a user has a `hostname` |
+| `acme_role_arn` | set only when the zone is in ANOTHER account; switches win-acme from self-assume to an SDK profile that assumes this role |
 | `win_acme_version` | pinned win-acme release tag; the route53 plugin is a second, separately versioned download |
 | `kms_key_id` | optional CMK for EBS + SSM; `null` uses AWS-managed keys |
 | `enable_nested_virtualization` | `true` for Docker; needs a supporting instance type |

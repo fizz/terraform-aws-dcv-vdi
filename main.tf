@@ -21,6 +21,10 @@ locals {
   # Any user asking for a public hostname needs the DNS + ACME plumbing.
   wants_tls = length([for u in var.vdi_users : u if u.hostname != null]) > 0
 
+  # The zone is in another account, so the DNS-01 challenge goes through a role there
+  # rather than through this instance role's own Route53 grants. See acme_role_arn.
+  acme_cross_account = var.acme_role_arn != null
+
   # Desktops asking to hibernate. Only these need their instance type inspected, and the
   # preconditions below index this map, so a desktop absent from it is never checked.
   hibernating = { for k, u in var.vdi_users : k => u if u.hibernate }
@@ -149,8 +153,13 @@ data "aws_iam_policy_document" "inline" {
   }
 
   # ACME DNS-01: publish/clean the _acme-challenge TXT for the VDI hostname.
+  #
+  # Same-account only. When the zone lives elsewhere (acme_role_arn set) these grants
+  # would be useless here -- Route53 has no resource policy, so a hostedzone ARN in
+  # another account cannot be authorised from this one. The permission belongs to the
+  # far role instead, and this role only gets to assume it.
   dynamic "statement" {
-    for_each = local.wants_tls ? [1] : []
+    for_each = local.wants_tls && !local.acme_cross_account ? [1] : []
     content {
       sid       = "AcmeDns01Write"
       actions   = ["route53:ChangeResourceRecordSets", "route53:ListResourceRecordSets"]
@@ -158,11 +167,23 @@ data "aws_iam_policy_document" "inline" {
     }
   }
   dynamic "statement" {
-    for_each = local.wants_tls ? [1] : []
+    for_each = local.wants_tls && !local.acme_cross_account ? [1] : []
     content {
       sid       = "AcmeDns01FindZone"
       actions   = ["route53:ListHostedZones", "route53:GetChange"]
       resources = ["*"]
+    }
+  }
+
+  # The cross-account path's ONLY new permission. One ARN, no wildcard: the desktop can
+  # become the DNS role and nothing else. Everything Route53 is then authorised in the
+  # account that owns the zone, where it already was.
+  dynamic "statement" {
+    for_each = local.wants_tls && local.acme_cross_account ? [1] : []
+    content {
+      sid       = "AcmeAssumeDnsRole"
+      actions   = ["sts:AssumeRole"]
+      resources = [var.acme_role_arn]
     }
   }
 }
@@ -348,6 +369,7 @@ resource "aws_instance" "vdi" {
     route53_zone_id   = var.route53_zone_id == null ? "" : var.route53_zone_id
     letsencrypt_email = var.letsencrypt_email == null ? "" : var.letsencrypt_email
     acme_role_name    = var.name
+    acme_role_arn     = var.acme_role_arn == null ? "" : var.acme_role_arn
     win_acme_version  = var.win_acme_version
   })
 

@@ -170,6 +170,43 @@ variable "letsencrypt_email" {
   default     = null
 }
 
+variable "acme_role_arn" {
+  description = <<-EOT
+    Role to assume for the DNS-01 challenge, when the hosted zone is in a DIFFERENT
+    account from the desktop. Null (the default) keeps the same-account path: the
+    instance role carries the Route53 permissions itself and win-acme self-assumes it.
+
+    WHY THIS EXISTS. win-acme's route53 plugin takes `--route53iamrole <NAME>`, not an
+    ARN, and builds the ARN from the account it is running in -- so it cannot name a
+    role in another account, and the same-account path has no cross-account form at
+    all. Route53 has no resource policy either, so the far account's zone cannot be
+    shared into this one by granting it.
+
+    Setting this SWITCHES the mechanism rather than adding to it: the module writes an
+    AWS SDK profile on the desktop whose `credential_source` is the instance metadata
+    and whose `role_arn` is this role, points win-acme at that profile through
+    AWS_PROFILE, and drops `--route53iamrole`. The .NET SDK performs the hop, so there
+    is still no IAM user and no static key -- the instance role's only new permission
+    is sts:AssumeRole on this one ARN.
+
+    The far role must trust this desktop's role, and its own Route53 grant stays where
+    it is, in the account that owns the zone. route53_zone_id is still required: it is
+    the zone the A record is written into and the zone win-acme is pointed at.
+
+    The alternative is delegating the subdomain into this account, which is a larger
+    change than it sounds: a delegation shadows EVERY existing record under that name,
+    so an app record or an ACM validation record living there stops resolving until it
+    is recreated in the new zone.
+  EOT
+  type        = string
+  default     = null
+
+  validation {
+    condition     = var.acme_role_arn == null || can(regex("^arn:aws[a-z-]*:iam::[0-9]{12}:role/.+", var.acme_role_arn))
+    error_message = "acme_role_arn must be a full IAM role ARN, for example arn:aws:iam::050868805716:role/northstar-stage-dns-write."
+  }
+}
+
 variable "win_acme_version" {
   description = <<-EOT
     win-acme release tag to install, e.g. "v2.2.9.1701". It is a release tag rather than

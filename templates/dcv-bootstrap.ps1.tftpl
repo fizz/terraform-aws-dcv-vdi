@@ -98,6 +98,37 @@ Copy-Item $KeyFile  "$d\private\dcv.key" -Force
 Restart-Service -Name dcvserver -Force
 '@
 
+%{ if acme_role_arn != "" ~}
+# CROSS-ACCOUNT ZONE. --route53iamrole takes a role NAME and builds the ARN from THIS
+# account, so it cannot reach a role in the account that owns the zone. Give the .NET
+# SDK a profile that makes the hop itself instead: credential_source is the instance
+# metadata, so the instance role is the source identity and nothing static is stored.
+#
+# The file goes under the SYSTEM profile because win-acme's renewal task runs as SYSTEM.
+# Written to a user profile it works once, by hand, and then the renewal ninety days
+# later cannot find it -- a failure that surfaces as an expired certificate, months from
+# now, with nothing connecting the two.
+$awsDir = 'C:\Windows\System32\config\systemprofile\.aws'
+New-Item -ItemType Directory -Force -Path $awsDir | Out-Null
+Set-Content -Path "$awsDir\config" -Encoding ASCII -Value @'
+[profile acme-dns]
+role_arn = ${acme_role_arn}
+credential_source = Ec2InstanceMetadata
+region = ${region}
+role_session_name = win-acme-dns01
+'@
+# Set for this process AND machine-wide, because the renewal task is a separate process.
+$env:AWS_PROFILE = 'acme-dns'
+[Environment]::SetEnvironmentVariable('AWS_PROFILE', 'acme-dns', 'Machine')
+
+& $wacs `
+  --target manual --host '${hostname}' `
+  --validation route53 `
+  --emailaddress '${letsencrypt_email}' --accepttos `
+  --store pemfiles --pemfilespath 'C:\dcv-cert' `
+  --installation script --script $deploy --scriptparameters '{CertificatePath} {KeyPath}' `
+  --setuptaskscheduler
+%{ else ~}
 & $wacs `
   --target manual --host '${hostname}' `
   --validation route53 --route53iamrole '${acme_role_name}' `
@@ -105,6 +136,7 @@ Restart-Service -Name dcvserver -Force
   --store pemfiles --pemfilespath 'C:\dcv-cert' `
   --installation script --script $deploy --scriptparameters '{CertificatePath} {KeyPath}' `
   --setuptaskscheduler
+%{ endif ~}
 %{ endif ~}
 
 # --- done: mark BEFORE rebooting so no later boot re-runs this, then reboot once ---
