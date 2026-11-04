@@ -6,8 +6,11 @@ terraform {
   required_version = ">= 1.3"
   required_providers {
     aws = {
-      source  = "hashicorp/aws"
-      version = ">= 5.90"
+      source = "hashicorp/aws"
+      # The module itself requires >= 6.0 (cpu_options.nested_virtualization and the
+      # aws_region data source's `region` attribute). An example pinned lower than the
+      # module it calls resolves to a provider the module cannot use.
+      version = ">= 6.0"
     }
   }
 }

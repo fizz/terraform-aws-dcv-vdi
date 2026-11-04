@@ -51,7 +51,7 @@ run-once marker (`C:\dcv-bootstrap.done`) — belt and suspenders.
 
 ```hcl
 module "vdi" {
-  source = "github.com/fizz/terraform-aws-dcv-vdi?ref=v0.1.0"
+  source = "github.com/fizz/terraform-aws-dcv-vdi?ref=v0.3.0"
 
   name                  = "dcv-vdi"
   vpc_id                = "vpc-0123456789abcdef0"
@@ -91,7 +91,7 @@ replaced, which an address-based rule does not.
 
 ```hcl
 module "vdi" {
-  source = "github.com/fizz/terraform-aws-dcv-vdi?ref=v0.2.2"
+  source = "github.com/fizz/terraform-aws-dcv-vdi?ref=v0.3.0"
 
   name      = "eval"
   vpc_id    = "vpc-0123456789abcdef0"
@@ -100,13 +100,21 @@ module "vdi" {
   assign_public_ip                   = false
   allowed_ingress_cidrs              = []
   allowed_ingress_security_group_ids = ["sg-0123456789abcdef0"]
+  route53_zone_id                    = "Z0123456789ABCDEFGHIJ"
+  letsencrypt_email                  = "you@example.com"
 
   enable_nested_virtualization = true
 
   vdi_users = {
     eval = {
       username = "evaluator"
-      hostname = null # no record, no certificate
+
+      # A real certificate and a name that resolves, on a desktop with no public
+      # address at all. DNS-01 never connects to the host, so the certificate is
+      # issued over the tailnet's head; the A record then points the certified name
+      # at the tailnet address.
+      hostname           = "eval-vdi.example.com"
+      private_dns_target = "100.64.0.5"
     }
   }
 }
@@ -120,12 +128,22 @@ moves into the overlay's ACLs, where the rule follows the person rather than an 
 Install and authenticate the tunnel client from your own provisioning — this module does
 not do it for you.
 
-### Two things to know
+### A public name for a private address
 
-`hostname` is still what asks for TLS. Setting it with `assign_public_ip = false` issues
-a certificate through DNS-01 — which needs no inbound and so still works — but writes no
-public A record, so nothing resolves the name unless you manage that elsewhere. For a
-private desktop, leave `hostname = null` and accept DCV's own certificate.
+`hostname` is what asks for TLS, in either mode. Issuance is DNS-01, which never connects
+to the host, so a desktop with no ingress and no public address still gets a real
+certificate from a public CA.
+
+What was missing until v0.3.0 was the other half: the name that certificate covers has to
+resolve to *something*, and in private mode there is no Elastic IP to point it at. Set
+`private_dns_target` to the address people actually reach the desktop on and the module
+writes the A record for you. Leave it unset and you get a certificate and no record,
+which is the old behaviour and still correct when something else owns that name.
+
+Publishing a private address in public DNS is deliberate here. `100.64.0.5` and
+`10.121.10.44` are not routable from the internet, so the record gives away a layout, not
+an entrance — and it buys a clean `https://` URL with no port, no certificate warning and
+no hosts-file edit on every client.
 
 The desktop still needs **egress**: DCV licensing, package pulls, the SSM agent and ACME
 all reach out. A private subnet with a NAT route, not an isolated one.
@@ -133,7 +151,57 @@ all reach out. A private subnet with a NAT route, not an isolated one.
 ### Outputs in private mode
 
 `public_ips` is an empty map. Use `private_ips`, and `dcv_urls` falls back from hostname
-to Elastic IP to the private address, so it is correct in all three modes.
+to Elastic IP to the private address, so it is correct in all three modes. `dns_records`
+lists the records this module wrote — a desktop with a hostname and no record is simply
+absent from it, which is the fastest way to see that a certified name resolves to nothing.
+
+## Hibernation: stop the desktop without losing the session
+
+A stopped EC2 instance keeps its disks and loses its memory. For a developer desktop that
+is the whole cost: the WSL2 VM, the containers, the editor, the warm caches all go, and
+coming back is a cold boot and a re-setup. So nobody stops it, and a box that is used four
+hours a day bills for twenty-four.
+
+Set `hibernate = true` and a stop writes RAM to the root volume and restores it on start.
+
+```hcl
+vdi_users = {
+  eval = {
+    username       = "evaluator"
+    instance_type  = "m8i.2xlarge" # 32 GB RAM
+    root_volume_gb = 150           # must exceed the RAM, with room for Windows
+    hibernate      = true
+  }
+}
+```
+
+Three things AWS requires, and what this module does about each:
+
+| Requirement | Handled by |
+|---|---|
+| Encrypted root volume | always — `encrypted = true`, unconditionally |
+| Root volume larger than the instance's RAM | a plan-time precondition that reads the real RAM figure from the instance type |
+| An instance type that supports hibernation | a plan-time precondition that reads `hibernation_supported` |
+
+Both preconditions fail the **plan**, naming the desktop and the numbers, rather than
+letting the first hibernate fail at the moment there is a session to lose.
+
+**Hibernation is launch-time only.** It cannot be switched on for an instance that already
+exists, so adding it replaces the desktop: the data volume survives (`delete_on_termination
+= false`), everything on `C:` does not. Pair it with `ami` on the same desktop and the
+replacement comes back already furnished:
+
+```hcl
+eval = {
+  username       = "evaluator"
+  root_volume_gb = 150
+  hibernate      = true
+  ami            = "ami-0abc123def4567890" # captured from the desktop being replaced
+}
+```
+
+`ami` is in `ignore_changes`, so setting it alone never replaces a running desktop. It
+takes effect on the replacement that `hibernate` triggers.
 
 ## Inputs / outputs
 
@@ -145,8 +213,19 @@ See [`variables.tf`](./variables.tf) and [`outputs.tf`](./outputs.tf). Highlight
 | `allowed_ingress_cidrs` | client IPs; `0.0.0.0/0` is strongly discouraged (DCV has its own OS-cred auth) but not blocked — empty list is |
 | `dcv_port` | default `8443`; a `443` portproxy fronts it |
 | `route53_zone_id` / `letsencrypt_email` | required only if a user has a `hostname` |
+| `win_acme_version` | pinned win-acme release tag; the route53 plugin is a second, separately versioned download |
 | `kms_key_id` | optional CMK for EBS + SSM; `null` uses AWS-managed keys |
 | `enable_nested_virtualization` | `true` for Docker; needs a supporting instance type |
+
+Per desktop, inside `vdi_users`:
+
+| Field | Notes |
+|---|---|
+| `hostname` | Route53 name + Let's Encrypt cert; `null` for DCV's self-signed |
+| `private_dns_target` | where that name points when `assign_public_ip = false` |
+| `hibernate` | stop without losing the session; launch-time only, so it replaces the desktop |
+| `ami` | launch from a captured AMI instead of the current Windows base image |
+| `instance_type` / `root_volume_gb` / `data_volume_gb` | per-desktop sizing |
 
 ## Requirements
 
@@ -156,8 +235,15 @@ See [`variables.tf`](./variables.tf) and [`outputs.tf`](./outputs.tf). Highlight
 
 ## Notes
 
-- Pin the win-acme release asset URL in `templates/dcv-bootstrap.ps1.tftpl` for reproducible
-  builds, and verify the DCV certificate registry keys against your DCV server version.
+- win-acme is pinned by `win_acme_version`, and the Route53 validation plugin is a second
+  download at the same tag — it is **not** inside `win-acme.x64.pluggable.zip`. Without it,
+  `--validation route53` fails only after the ACME account is registered, which reads as a
+  Let's Encrypt problem rather than a missing file.
+- The certificate is deployed by **copying the PEMs** to
+  `C:\Windows\System32\config\systemprofile\AppData\Local\NICE\dcv\` (key under `private\`).
+  DCV reads that fixed path and ignores the `connectivity` registry values: setting
+  `certificate-file` there applies without error and changes nothing, and the server keeps
+  serving its self-signed certificate.
 - The furnish layer (Docker Desktop + tools) is intentionally out of scope — do it over SSM
   or Ansible after the box is up.
 - Prior art: check the Terraform Registry for an existing DCV + Let's Encrypt module before
