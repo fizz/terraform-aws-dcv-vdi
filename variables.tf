@@ -28,6 +28,16 @@ variable "vdi_users" {
     data_volume_gb = optional(number, 100)
     hostname       = optional(string) # FQDN inside route53_zone_id; null = no DNS / no LE cert
 
+    # Launch this desktop from a specific AMI instead of the current Windows base image.
+    # Point it at an AMI captured from a furnished desktop and a replacement comes back
+    # with the tools already on it, rather than re-running the whole provisioning.
+    #
+    # `ami` is in ignore_changes, so setting this on a desktop that already exists does
+    # not replace it. It takes effect the next time the instance is replaced for another
+    # reason -- which is what makes it pair with `hibernate` below: one apply that turns
+    # hibernation on replaces the desktop, and the replacement launches from here.
+    ami = optional(string)
+
     # Where the A record should point when assign_public_ip is false.
     #
     # A desktop on an overlay network has a hostname and a certificate but no public
@@ -43,6 +53,20 @@ variable "vdi_users" {
     #
     # Ignored when assign_public_ip is true, where the record follows the Elastic IP.
     private_dns_target = optional(string)
+
+    # Hibernate instead of stopping, so a stop keeps the running session: open
+    # applications, a WSL2 VM and its containers, warm caches. A plain stop keeps the
+    # disks and loses all of that, which is why desktops get left running around the
+    # clock -- the restart costs more than the idle instance.
+    #
+    # Launch-time only. It cannot be turned on for an existing instance, so enabling it
+    # REPLACES the desktop. Everything on the data volume survives (delete_on_termination
+    # is false); everything on C: does not.
+    #
+    # AWS also requires an encrypted root volume (this module always encrypts it), a root
+    # volume with room for the instance's RAM, and an instance type that supports
+    # hibernation. The module checks the last two against the instance type at plan time.
+    hibernate = optional(bool, false)
   }))
 
   # A hostname is what the record is for. Without one there is nothing to point at the

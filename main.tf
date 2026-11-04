@@ -20,11 +20,25 @@ locals {
 
   # Any user asking for a public hostname needs the DNS + ACME plumbing.
   wants_tls = length([for u in var.vdi_users : u if u.hostname != null]) > 0
+
+  # Desktops asking to hibernate. Only these need their instance type inspected, and the
+  # preconditions below index this map, so a desktop absent from it is never checked.
+  hibernating = { for k, u in var.vdi_users : k => u if u.hibernate }
 }
 
-# Windows base AMI resolved from the AWS public SSM parameter (always current).
+# Windows base AMI resolved from the AWS public SSM parameter (always current). A user
+# entry with its own `ami` overrides it; this stays the fallback for everyone else.
 data "aws_ssm_parameter" "windows_ami" {
   name = var.windows_ami_ssm_parameter
+}
+
+# Hibernation's two numeric requirements are properties of the instance type, so read
+# them rather than asking the caller to assert them. The alternative is discovering a
+# too-small root volume at the first hibernate, when the session being saved is the cost.
+data "aws_ec2_instance_type" "vdi" {
+  for_each = local.hibernating
+
+  instance_type = each.value.instance_type
 }
 
 # -----------------------------------------------------------------------------
@@ -271,11 +285,20 @@ resource "aws_security_group" "vdi" {
 resource "aws_instance" "vdi" {
   for_each = var.vdi_users
 
-  ami                    = data.aws_ssm_parameter.windows_ami.value
+  # nonsensitive() because aws_ssm_parameter marks every value sensitive -- it cannot
+  # know this one is a public Windows AMI id -- and that mark spreads through the
+  # conditional, so the plan printed "ami = (sensitive value)" even for a caller who
+  # typed the AMI id in their own configuration. The AMI a desktop is about to be
+  # replaced from is the single line you most want to read in that plan.
+  ami                    = each.value.ami == null ? nonsensitive(data.aws_ssm_parameter.windows_ami.value) : each.value.ami
   instance_type          = each.value.instance_type
   subnet_id              = var.subnet_id
   vpc_security_group_ids = [aws_security_group.vdi.id]
   iam_instance_profile   = aws_iam_instance_profile.vdi.name
+
+  # Launch-time only, and ForceNew: turning this on replaces the desktop. See the
+  # `hibernate` comment in variables.tf.
+  hibernation = each.value.hibernate
 
   dynamic "cpu_options" {
     for_each = var.enable_nested_virtualization ? [1] : []
@@ -289,11 +312,19 @@ resource "aws_instance" "vdi" {
     http_tokens   = "required"
   }
 
+  # Encrypted unconditionally, which is also what hibernation requires: a hibernating
+  # instance writes its whole RAM to this volume, so an unencrypted one would put the
+  # memory image -- credentials, keys, whatever was open -- on disk in the clear.
+  #
+  # delete_on_termination is stated rather than left to the default (which is also true)
+  # because the data volume below deliberately sets it to false. Read together, the pair
+  # says which disk is meant to survive the desktop and which is not.
   root_block_device {
-    volume_type = "gp3"
-    volume_size = each.value.root_volume_gb
-    encrypted   = true
-    kms_key_id  = var.kms_key_id
+    volume_type           = "gp3"
+    volume_size           = each.value.root_volume_gb
+    encrypted             = true
+    kms_key_id            = var.kms_key_id
+    delete_on_termination = true
   }
 
   # Data volume -> Windows D: (user profile + work files).
@@ -325,6 +356,19 @@ resource "aws_instance" "vdi" {
   # Don't silently replace a user's box on an AMI refresh or user_data tweak.
   lifecycle {
     ignore_changes = [ami, user_data]
+
+    # Both conditions are guarded on `hibernate` first, because a desktop that is not
+    # hibernating has no entry in the data source map and indexing it would fail. The
+    # second operand of `||` is evaluated either way, so the index needs the `try`.
+    precondition {
+      condition     = !each.value.hibernate || try(data.aws_ec2_instance_type.vdi[each.key].hibernation_supported, false)
+      error_message = "Instance type ${each.value.instance_type} does not support hibernation, so desktop \"${each.key}\" cannot set hibernate = true. List the types that do with: aws ec2 describe-instance-type-offerings --filters Name=hibernation-supported,Values=true"
+    }
+
+    precondition {
+      condition     = !each.value.hibernate || each.value.root_volume_gb * 1024 >= try(data.aws_ec2_instance_type.vdi[each.key].memory_size, 0)
+      error_message = "Desktop \"${each.key}\" hibernates onto a ${each.value.root_volume_gb} GB root volume, but ${each.value.instance_type} has ${try(data.aws_ec2_instance_type.vdi[each.key].memory_size, 0) / 1024} GB of RAM to write there. Raise root_volume_gb above the RAM size -- Windows needs the rest of the disk as well."
+    }
   }
 }
 
