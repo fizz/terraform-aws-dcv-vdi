@@ -27,7 +27,39 @@ variable "vdi_users" {
     root_volume_gb = optional(number, 100)
     data_volume_gb = optional(number, 100)
     hostname       = optional(string) # FQDN inside route53_zone_id; null = no DNS / no LE cert
+
+    # Where the A record should point when assign_public_ip is false.
+    #
+    # A desktop on an overlay network has a hostname and a certificate but no public
+    # address, and before v0.3.0 the module wrote no record at all in that mode -- so the
+    # name the certificate was issued for resolved to nothing, and whoever stood the
+    # desktop up created the record by hand. Set this to the address people actually
+    # reach the desktop on: its tailnet address, its VPN address, or its private IP from
+    # a peered VPC.
+    #
+    # Publishing a private address in public DNS is deliberate and safe here: nothing on
+    # the internet can route to it, and DNS-01 validation never connects to the host,
+    # which is exactly why a desktop with no ingress can hold a real certificate.
+    #
+    # Ignored when assign_public_ip is true, where the record follows the Elastic IP.
+    private_dns_target = optional(string)
   }))
+
+  # A hostname is what the record is for. Without one there is nothing to point at the
+  # address, so a private_dns_target on its own is a silent no-op -- the kind that reads
+  # as a DNS problem later.
+  validation {
+    condition     = alltrue([for u in var.vdi_users : u.hostname != null if u.private_dns_target != null])
+    error_message = "A desktop with private_dns_target also needs a hostname: the target is the address that hostname's A record points at."
+  }
+
+  # cidrnetmask rejects anything that is not a real IPv4 address -- "10.0.0.300" and an
+  # IPv6 address both fail -- so it validates the address properly, which no regex short
+  # enough to read here does.
+  validation {
+    condition     = alltrue([for u in var.vdi_users : can(cidrnetmask("${u.private_dns_target}/32")) if u.private_dns_target != null])
+    error_message = "private_dns_target must be a single IPv4 address, such as 100.64.0.5 or 10.121.10.44."
+  }
 }
 
 variable "assign_public_ip" {

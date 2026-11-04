@@ -337,13 +337,21 @@ resource "aws_eip" "vdi" {
   tags = merge(var.tags, { Name = "${var.name}-${each.key}", User = each.value.username })
 }
 
-# Public DNS name -> EIP (the URL users type; win-acme certs this hostname).
+# The hostname users type, and the name win-acme certifies.
+#
+# In public mode it points at the Elastic IP. In private mode there is no Elastic IP, so
+# it points at whatever private_dns_target names -- a tailnet address, a VPN address, a
+# private IP reached over a peering. A desktop that sets neither gets no record: the
+# hostname still drives certificate issuance, and resolving it stays someone else's job.
 resource "aws_route53_record" "vdi" {
-  for_each = var.assign_public_ip ? { for k, u in var.vdi_users : k => u if u.hostname != null } : {}
+  for_each = {
+    for k, u in var.vdi_users : k => u
+    if u.hostname != null && (var.assign_public_ip || u.private_dns_target != null)
+  }
 
   zone_id = var.route53_zone_id
   name    = each.value.hostname
   type    = "A"
   ttl     = 300
-  records = [aws_eip.vdi[each.key].public_ip]
+  records = [var.assign_public_ip ? aws_eip.vdi[each.key].public_ip : each.value.private_dns_target]
 }

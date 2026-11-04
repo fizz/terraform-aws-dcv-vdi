@@ -19,8 +19,9 @@ output "dcv_urls" {
     is set, else the Elastic IP, else the private address for a desktop reached over a
     tailnet or VPN.
 
-    A hostname with assign_public_ip = false issues a certificate but writes no public
-    A record, so whatever resolves that name has to be managed outside this module.
+    A hostname with assign_public_ip = false resolves only if that desktop also sets
+    private_dns_target. Without one, the certificate is issued and no record is written,
+    so resolving the name is managed outside this module.
   EOT
   value = {
     for k, u in var.vdi_users : k => "https://${coalesce(
@@ -29,6 +30,16 @@ output "dcv_urls" {
       aws_instance.vdi[k].private_ip,
     )}"
   }
+}
+
+output "dns_records" {
+  description = <<-EOT
+    Map of vdi user id -> the A record this module wrote, and the address it points at.
+    A desktop with a hostname but no record -- private mode with no private_dns_target --
+    is absent from the map, which is the quickest way to see that the name the
+    certificate covers resolves to nothing.
+  EOT
+  value       = { for k, r in aws_route53_record.vdi : k => { fqdn = r.fqdn, address = one(r.records) } }
 }
 
 output "admin_password_ssm_parameters" {
