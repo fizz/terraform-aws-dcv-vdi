@@ -114,6 +114,23 @@ variable "letsencrypt_email" {
   default     = null
 }
 
+variable "win_acme_version" {
+  description = <<-EOT
+    win-acme release tag to install, e.g. "v2.2.9.1701". It is a release tag rather than
+    a `latest` URL on purpose: the bootstrap runs once at first boot, so a desktop built
+    today and its replacement built next month would otherwise get different ACME clients
+    with no record of which, and that difference surfaces as a renewal that stops working
+    on one box.
+
+    The tag also names the files. The pluggable release and the route53 validation plugin
+    are two separate downloads, both versioned -- the plugin is not inside the pluggable
+    zip, and without it `--validation route53` fails after the ACME account is already
+    registered, which reads as a Let's Encrypt problem rather than a missing file.
+  EOT
+  type        = string
+  default     = "v2.2.9.1701"
+}
+
 variable "kms_key_id" {
   description = "KMS key ARN for EBS volume and SSM SecureString encryption. Null uses the AWS-managed keys (aws/ebs, aws/ssm)."
   type        = string

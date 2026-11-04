@@ -317,6 +317,7 @@ resource "aws_instance" "vdi" {
     route53_zone_id   = var.route53_zone_id == null ? "" : var.route53_zone_id
     letsencrypt_email = var.letsencrypt_email == null ? "" : var.letsencrypt_email
     acme_role_name    = var.name
+    win_acme_version  = var.win_acme_version
   })
 
   tags = merge(var.tags, { Name = "${var.name}-${each.key}", User = each.value.username })

@@ -69,19 +69,32 @@ netsh interface portproxy add v4tov4 listenport=443 listenaddress=0.0.0.0 connec
 # --setuptaskscheduler installs the renewal task (which re-runs issuance + the deploy script).
 New-Item -ItemType Directory -Force -Path 'C:\dcv-cert' | Out-Null
 
-# NOTE: pin this to a specific win-acme release asset for your environment.
+# The route53 validation plugin is a SEPARATE download. win-acme.x64.pluggable.zip does
+# not contain it, and without it `--validation route53` fails after the account is
+# already registered, which reads as an ACME problem rather than a missing file.
 $wacsZip = "$env:TEMP\win-acme.zip"
-Invoke-WebRequest -Uri 'https://github.com/win-acme/win-acme/releases/latest/download/win-acme.x64.pluggable.zip' -OutFile $wacsZip
+$r53Zip  = "$env:TEMP\win-acme-route53.zip"
+Invoke-WebRequest -Uri 'https://github.com/win-acme/win-acme/releases/download/${win_acme_version}/win-acme.${win_acme_version}.x64.pluggable.zip' -OutFile $wacsZip
+Invoke-WebRequest -Uri 'https://github.com/win-acme/win-acme/releases/download/${win_acme_version}/plugin.validation.dns.route53.${win_acme_version}.zip' -OutFile $r53Zip
 Expand-Archive -Path $wacsZip -DestinationPath 'C:\win-acme' -Force
+Expand-Archive -Path $r53Zip  -DestinationPath 'C:\win-acme' -Force
 $wacs = (Get-ChildItem 'C:\win-acme' -Recurse -Filter 'wacs.exe' | Select-Object -First 1).FullName
 
-# Deploy script: point DCV at the freshly-issued PEM and restart it. Re-runs on every renewal.
+# Deploy script: put the PEMs where DCV reads them, then restart it. Runs on every renewal.
+#
+# DCV reads a fixed path and ignores the connectivity registry values. Setting
+# certificate-file and certificate-key-file there looks correct, applies without error,
+# and changes nothing: the server keeps serving its self-signed certificate and logs
+# "Loaded server certificate from C:\Windows\system32...". The key goes under private\.
+#
+# This is the deploy hook that has been renewing a production desktop since 2026-08.
 $deploy = 'C:\dcv-cert\deploy-to-dcv.ps1'
 Set-Content -Path $deploy -Encoding ASCII -Value @'
 param([string]$CertFile, [string]$KeyFile)
-$k = 'HKEY_USERS\S-1-5-18\Software\GSettings\com\nicesoftware\dcv\connectivity'
-reg add $k /v certificate-file     /t REG_SZ /d $CertFile /f
-reg add $k /v certificate-key-file /t REG_SZ /d $KeyFile  /f
+$d = 'C:\Windows\System32\config\systemprofile\AppData\Local\NICE\dcv'
+New-Item -ItemType Directory -Force -Path "$d\private" | Out-Null
+Copy-Item $CertFile "$d\dcv.pem"         -Force
+Copy-Item $KeyFile  "$d\private\dcv.key" -Force
 Restart-Service -Name dcvserver -Force
 '@
 
