@@ -1,0 +1,7 @@
+#!/bin/bash
+# The Ubuntu VDI is administered only through SSM. The caller's repeatable
+# furnish configures its workload and any local-account policy afterward; this
+# closes SSH during the earliest boot interval too.
+set -eu
+systemctl disable --now ssh.service 2>/dev/null || true
+systemctl mask ssh.service 2>/dev/null || true

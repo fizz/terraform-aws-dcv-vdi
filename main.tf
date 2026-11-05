@@ -33,7 +33,13 @@ locals {
 # Windows base AMI resolved from the AWS public SSM parameter (always current). A user
 # entry with its own `ami` overrides it; this stays the fallback for everyone else.
 data "aws_ssm_parameter" "windows_ami" {
-  name = var.windows_ami_ssm_parameter
+  count = var.platform == "windows" ? 1 : 0
+  name  = var.windows_ami_ssm_parameter
+}
+
+data "aws_ssm_parameter" "ubuntu_ami" {
+  count = var.platform == "ubuntu" ? 1 : 0
+  name  = var.ubuntu_ami_ssm_parameter
 }
 
 # Hibernation's two numeric requirements are properties of the instance type, so read
@@ -311,7 +317,9 @@ resource "aws_instance" "vdi" {
   # conditional, so the plan printed "ami = (sensitive value)" even for a caller who
   # typed the AMI id in their own configuration. The AMI a desktop is about to be
   # replaced from is the single line you most want to read in that plan.
-  ami                    = each.value.ami == null ? nonsensitive(data.aws_ssm_parameter.windows_ami.value) : each.value.ami
+  ami = each.value.ami == null ? nonsensitive(
+    var.platform == "windows" ? data.aws_ssm_parameter.windows_ami[0].value : data.aws_ssm_parameter.ubuntu_ami[0].value
+  ) : each.value.ami
   instance_type          = each.value.instance_type
   subnet_id              = var.subnet_id
   vpc_security_group_ids = [aws_security_group.vdi.id]
@@ -322,7 +330,7 @@ resource "aws_instance" "vdi" {
   hibernation = each.value.hibernate
 
   dynamic "cpu_options" {
-    for_each = var.enable_nested_virtualization ? [1] : []
+    for_each = var.platform == "windows" && var.enable_nested_virtualization ? [1] : []
     content {
       nested_virtualization = "enabled"
     }
@@ -348,7 +356,8 @@ resource "aws_instance" "vdi" {
     delete_on_termination = true
   }
 
-  # Data volume -> Windows D: (user profile + work files).
+  # Independent encrypted work volume. Windows sees it as D:; Linux furnish mounts it
+  # by filesystem label, so the NVMe device name never becomes configuration.
   ebs_block_device {
     device_name           = "xvdb"
     volume_type           = "gp3"
@@ -358,7 +367,7 @@ resource "aws_instance" "vdi" {
     delete_on_termination = false
   }
 
-  user_data = templatefile("${path.module}/templates/dcv-bootstrap.ps1.tftpl", {
+  user_data = var.platform == "windows" ? templatefile("${path.module}/templates/dcv-bootstrap.ps1.tftpl", {
     region             = local.region
     ssm_password_param = aws_ssm_parameter.admin_password[each.key].name
     admin_username     = each.value.username
@@ -371,9 +380,9 @@ resource "aws_instance" "vdi" {
     acme_role_name    = var.name
     acme_role_arn     = var.acme_role_arn == null ? "" : var.acme_role_arn
     win_acme_version  = var.win_acme_version
-  })
+  }) : templatefile("${path.module}/templates/linux-bootstrap.sh.tftpl", {})
 
-  tags = merge(var.tags, { Name = "${var.name}-${each.key}", User = each.value.username })
+  tags = merge(var.tags, { Name = try(each.value.instance_name, null) != null ? each.value.instance_name : "${var.name}-${each.key}", User = each.value.username })
 
   # Don't silently replace a user's box on an AMI refresh or user_data tweak.
   lifecycle {
