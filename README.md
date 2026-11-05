@@ -108,6 +108,7 @@ module "vdi" {
   vdi_users = {
     eval = {
       username = "evaluator"
+      idle_stop = true # opts this instance into the account's IdleStop=enabled controller
 
       # A real certificate and a name that resolves, on a desktop with no public
       # address at all. DNS-01 never connects to the host, so the certificate is
@@ -127,6 +128,13 @@ moves into the overlay's ACLs, where the rule follows the person rather than an 
 
 Install and authenticate the tunnel client from your own provisioning — this module does
 not do it for you.
+
+### Idle-stop integration
+
+Set `idle_stop = true` on a VDI entry to add the `IdleStop=enabled` EC2 tag to that
+instance. The account's existing start-page/idle-stop controller uses this tag to select
+eligible desktops. This module only opts the instance in; it does not create or configure
+that external controller.
 
 ### A public name for a private address
 

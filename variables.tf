@@ -4,6 +4,17 @@ variable "name" {
   default     = "dcv-vdi"
 }
 
+variable "platform" {
+  description = "Guest platform. `windows` retains the original DCV bootstrap; `ubuntu` launches Canonical Ubuntu 24.04 with SSM only, ready for the Linux furnish playbook to install DCV."
+  type        = string
+  default     = "windows"
+
+  validation {
+    condition     = contains(["windows", "ubuntu"], var.platform)
+    error_message = "platform must be either `windows` or `ubuntu`."
+  }
+}
+
 variable "vpc_id" {
   description = "VPC to place the VDI in."
   type        = string
@@ -19,10 +30,14 @@ variable "vdi_users" {
     VDI instances to create, keyed by a short id. Each entry is one Windows desktop
     with its own Elastic IP, seeded local-admin password (in SSM), and optional public
     hostname. Set `hostname` to get a Route53 A record + auto-renewing Let's Encrypt cert;
-    leave it null for an IP-only box with DCV's self-signed cert.
+    leave it null for an IP-only box with DCV's self-signed cert. `idle_stop = true`
+    opts that instance into the account's existing idle-stop/start-page controller.
   EOT
   type = map(object({
-    username       = string
+    username = string
+    # Optional stable Name tag. This is useful when a start page discovers one active
+    # desktop by tag while an older stopped desktop must remain archived.
+    instance_name  = optional(string)
     instance_type  = optional(string, "m8i-flex.xlarge")
     root_volume_gb = optional(number, 100)
     data_volume_gb = optional(number, 100)
@@ -67,6 +82,10 @@ variable "vdi_users" {
     # volume with room for the instance's RAM, and an instance type that supports
     # hibernation. The module checks the last two against the instance type at plan time.
     hibernate = optional(bool, false)
+
+    # Opt this desktop into the account's idle-stop/start-page controller. The
+    # controller selects eligible instances by the IdleStop=enabled EC2 tag.
+    idle_stop = optional(bool, false)
   }))
 
   # A hostname is what the record is for. Without one there is nothing to point at the
@@ -156,6 +175,12 @@ variable "windows_ami_ssm_parameter" {
   description = "AWS public SSM parameter that resolves the Windows base AMI."
   type        = string
   default     = "/aws/service/ami-windows-latest/Windows_Server-2022-English-Full-Base"
+}
+
+variable "ubuntu_ami_ssm_parameter" {
+  description = "AWS public SSM parameter resolving Canonical Ubuntu 24.04 LTS amd64."
+  type        = string
+  default     = "/aws/service/canonical/ubuntu/server/24.04/stable/current/amd64/hvm/ebs-gp3/ami-id"
 }
 
 variable "route53_zone_id" {
