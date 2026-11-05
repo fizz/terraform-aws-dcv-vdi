@@ -382,7 +382,14 @@ resource "aws_instance" "vdi" {
     win_acme_version  = var.win_acme_version
   }) : templatefile("${path.module}/templates/linux-bootstrap.sh.tftpl", {})
 
-  tags = merge(var.tags, { Name = try(each.value.instance_name, null) != null ? each.value.instance_name : "${var.name}-${each.key}", User = each.value.username })
+  tags = merge(
+    var.tags,
+    {
+      Name = try(each.value.instance_name, null) != null ? each.value.instance_name : "${var.name}-${each.key}"
+      User = each.value.username
+    },
+    each.value.idle_stop ? { IdleStop = "enabled" } : {},
+  )
 
   # Don't silently replace a user's box on an AMI refresh or user_data tweak.
   lifecycle {
