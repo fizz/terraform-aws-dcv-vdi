@@ -156,6 +156,37 @@ variable "allowed_ingress_cidrs" {
 
 }
 
+variable "egress_rules" {
+  description = <<-EOT
+    Explicit VDI security-group egress rules. Null preserves the historical allow-all
+    behavior; an empty list removes all egress. Use this to restrict private desktops
+    to VPC endpoints and named internal services without changing other module users.
+  EOT
+  type = list(object({
+    description        = string
+    protocol           = string
+    from_port          = number
+    to_port            = number
+    cidr_blocks        = optional(list(string), [])
+    ipv6_cidr_blocks   = optional(list(string), [])
+    prefix_list_ids    = optional(list(string), [])
+    security_group_ids = optional(list(string), [])
+  }))
+  default = null
+
+  validation {
+    condition = var.egress_rules == null || alltrue([for rule in var.egress_rules :
+      length(compact([
+        length(rule.cidr_blocks) > 0 ? "cidr" : "",
+        length(rule.ipv6_cidr_blocks) > 0 ? "ipv6" : "",
+        length(rule.prefix_list_ids) > 0 ? "prefix" : "",
+        length(rule.security_group_ids) > 0 ? "sg" : "",
+      ])) == 1
+    ])
+    error_message = "Each egress rule must target exactly one of cidr_blocks, ipv6_cidr_blocks, prefix_list_ids, or security_group_ids."
+  }
+}
+
 # Both lists empty is legitimate and is the third mode: the desktop is itself a node on
 # an overlay network -- a tailnet, a WireGuard mesh -- so DCV traffic arrives through a
 # tunnel that terminates on the host and never crosses the security group at all. Access

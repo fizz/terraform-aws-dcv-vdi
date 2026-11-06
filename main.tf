@@ -291,12 +291,27 @@ resource "aws_security_group" "vdi" {
     }
   }
 
-  egress {
-    description = "All egress (DCV licensing, package/tool pulls, SSM, ACME)"
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
+  dynamic "egress" {
+    for_each = var.egress_rules == null ? [{
+      description        = "All egress (legacy default)"
+      protocol           = "-1"
+      from_port          = 0
+      to_port            = 0
+      cidr_blocks        = ["0.0.0.0/0"]
+      ipv6_cidr_blocks   = []
+      prefix_list_ids    = []
+      security_group_ids = []
+    }] : var.egress_rules
+    content {
+      description      = egress.value.description
+      from_port        = egress.value.from_port
+      to_port          = egress.value.to_port
+      protocol         = egress.value.protocol
+      cidr_blocks      = egress.value.cidr_blocks
+      ipv6_cidr_blocks = egress.value.ipv6_cidr_blocks
+      prefix_list_ids  = egress.value.prefix_list_ids
+      security_groups  = egress.value.security_group_ids
+    }
   }
 
   tags = merge(var.tags, { Name = var.name })
